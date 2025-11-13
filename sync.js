@@ -1,6 +1,5 @@
 const { execSync } = require("child_process");
 const fs = require("fs");
-const path = require("path");
 const fetch = require("node-fetch");
 
 const SRC_REPO = "https://github.com/cmliu/edgetunnel.git";
@@ -72,23 +71,108 @@ function writeLastCommits(data) {
   fs.writeFileSync(LAST_COMMIT_FILE, data);
 }
 
-function getAllBranches() {
-  const repoUrl = getAuthenticatedRepoUrl();
+function parseCommitsData(commitsText) {
+  const lines = commitsText.split('\n').filter(line => line.trim());
+  const commits = {};
+  
+  lines.forEach(line => {
+    const [hash, ref] = line.split('\t');
+    const branch = ref.replace('refs/heads/', '');
+    commits[branch] = hash;
+  });
+  
+  return commits;
+}
+
+// 获取分支的最后提交时间
+async function getBranchCommitTime(branch, commitHash) {
   try {
-    console.log("获取所有分支...");
-    const output = execSync(`git ls-remote --heads ${repoUrl}`, { 
-      encoding: "utf8",
-      timeout: 30000 
-    });
-    const branches = output.trim().split('\n')
-      .filter(line => line)
-      .map(line => line.split('\t')[1].replace('refs/heads/', ''));
-    console.log(`找到 ${branches.length} 个分支:`, branches);
-    return branches;
+    const apiUrl = `https://api.github.com/repos/cmliu/edgetunnel/commits/${commitHash}`;
+    const headers = {
+      'Accept': 'application/vnd.github.v3+json'
+    };
+    
+    if (GH_TOKEN) {
+      headers['Authorization'] = `token ${GH_TOKEN}`;
+    }
+    
+    const response = await fetch(apiUrl, { headers });
+    
+    if (!response.ok) {
+      throw new Error(`GitHub API 错误: ${response.status}`);
+    }
+    
+    const commitData = await response.json();
+    return new Date(commitData.commit.committer.date);
   } catch (error) {
-    console.error("获取分支失败:", error);
-    throw error;
+    console.warn(`无法获取分支 ${branch} 的提交时间:`, error.message);
+    return new Date(0); // 如果获取失败，返回最早的时间
   }
+}
+
+// 获取仓库的最后更新时间
+async function getRepoLastUpdateTime() {
+  try {
+    const apiUrl = `https://api.github.com/repos/cmliu/edgetunnel`;
+    const headers = {
+      'Accept': 'application/vnd.github.v3+json'
+    };
+    
+    if (GH_TOKEN) {
+      headers['Authorization'] = `token ${GH_TOKEN}`;
+    }
+    
+    const response = await fetch(apiUrl, { headers });
+    
+    if (!response.ok) {
+      throw new Error(`GitHub API 错误: ${response.status}`);
+    }
+    
+    const repoData = await response.json();
+    // 返回仓库的 pushed_at 时间，这是最后推送时间
+    return new Date(repoData.pushed_at);
+  } catch (error) {
+    console.warn(`无法获取仓库更新时间:`, error.message);
+    return new Date(); // 如果获取失败，返回当前时间
+  }
+}
+
+async function getChangedBranches(oldCommits, newCommits) {
+  const changedBranches = [];
+  
+  for (const [branch, newHash] of Object.entries(newCommits)) {
+    const oldHash = oldCommits[branch];
+    if (oldHash !== newHash) {
+      const commitTime = await getBranchCommitTime(branch, newHash);
+      changedBranches.push({
+        branch,
+        oldHash,
+        newHash,
+        commitTime,
+        url: `https://github.com/cmliu/edgetunnel/tree/${branch}`
+      });
+    }
+  }
+  
+  // 检查是否有新增分支
+  for (const branch of Object.keys(newCommits)) {
+    if (!oldCommits[branch]) {
+      const commitTime = await getBranchCommitTime(branch, newCommits[branch]);
+      changedBranches.push({
+        branch,
+        oldHash: null,
+        newHash: newCommits[branch],
+        commitTime,
+        url: `https://github.com/cmliu/edgetunnel/tree/${branch}`,
+        isNew: true
+      });
+    }
+  }
+  
+  // 按照提交时间从旧到新排序（最新的排在最后面）
+  changedBranches.sort((a, b) => a.commitTime - b.commitTime);
+  
+  return changedBranches;
 }
 
 function syncRepo() {
@@ -101,14 +185,14 @@ function syncRepo() {
       execSync(`rm -rf ${LOCAL_REPO}`);
     }
     
-    // 克隆仓库（包含所有分支）
-    console.log("开始克隆仓库（所有分支）...");
-    execSync(`git clone --bare ${repoUrl} ${LOCAL_REPO}`, { 
+    // 克隆仓库
+    console.log("开始克隆仓库...");
+    execSync(`git clone --mirror ${repoUrl} ${LOCAL_REPO}`, { 
       stdio: "inherit",
       timeout: 120000 
     });
     
-    console.log("✅ 仓库克隆完成");
+    console.log("✅ 同步完成");
     
   } catch (error) {
     console.error("❌ 同步失败:", error);
@@ -116,99 +200,73 @@ function syncRepo() {
   }
 }
 
-function copyBranchFiles(branch) {
-  try {
-    console.log(`📋 处理分支: ${branch}`);
-    
-    // 创建分支目录
-    const branchDir = `branches/${branch}`;
-    if (fs.existsSync(branchDir)) {
-      execSync(`rm -rf ${branchDir}`);
-    }
-    fs.mkdirSync(branchDir, { recursive: true });
-    
-    // 检出分支文件
-    execSync(`cd ${LOCAL_REPO} && git archive --format=tar ${branch} | tar -x -C ../${branchDir}`, {
-      stdio: "inherit",
-      shell: true
-    });
-    
-    console.log(`✅ 分支 ${branch} 文件已提取到 ${branchDir}`);
-    
-    // 创建分支信息文件
-    const branchInfo = {
-      branch: branch,
-      lastSync: new Date().toISOString(),
-      commit: execSync(`cd ${LOCAL_REPO} && git rev-parse ${branch}`, { encoding: 'utf8' }).trim()
-    };
-    
-    fs.writeFileSync(`${branchDir}/branch-info.json`, JSON.stringify(branchInfo, null, 2));
-    
-  } catch (error) {
-    console.error(`❌ 处理分支 ${branch} 失败:`, error);
-  }
-}
-
-function createBranchesIndex(branches) {
-  const indexContent = `
-# Edgetunnel 所有分支同步
-
-本仓库自动同步 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的所有分支。
-
-## 可用分支
-
-${branches.map(branch => `- [${branch}](./branches/${branch}/)`).join('\n')}
-
-## 最后同步时间
-
-${new Date().toISOString()}
-
-> 此仓库通过 GitHub Actions 自动同步，每天检查更新。
-  `.trim();
-  
-  fs.writeFileSync('BRANCHES.md', indexContent);
-}
-
 (async function main() {
   try {
     console.log("🔍 检查更新...");
-    const latest = getLatestCommits();
-    const last = readLastCommits();
+    const latestText = getLatestCommits();
+    const lastText = readLastCommits();
     
-    console.log("上次 commits:", last ? "有记录" : "无记录");
-    console.log("最新 commits:", latest ? "有更新" : "无数据");
+    console.log("上次 commits:", lastText ? "有记录" : "无记录");
+    console.log("最新 commits:", latestText ? "有数据" : "无数据");
     
-    if (latest !== last) {
+    if (latestText !== lastText) {
       console.log("🔄 检测到更新，开始同步...");
       
-      // 同步仓库
+      const oldCommits = lastText ? parseCommitsData(lastText) : {};
+      const newCommits = parseCommitsData(latestText);
+      const changedBranches = await getChangedBranches(oldCommits, newCommits);
+      
+      // 获取仓库的实际最后更新时间
+      const repoUpdateTime = await getRepoLastUpdateTime();
+      const updateTimeString = repoUpdateTime.toLocaleString('zh-CN', { 
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      
       syncRepo();
+      writeLastCommits(latestText);
       
-      // 获取所有分支
-      const branches = getAllBranches();
+      // 构建 Telegram 消息
+      let message = "✅ <b>edgetunnel 仓库已更新</b>\n\n";
       
-      // 清理旧的 branches 目录
-      if (fs.existsSync('branches')) {
-        execSync(`rm -rf branches`);
+      if (changedBranches.length > 0) {
+        message += "<b>更新的分支 (按更新时间排序):</b>\n";
+        changedBranches.forEach(({ branch, oldHash, newHash, commitTime, url, isNew }) => {
+          const shortOldHash = oldHash ? oldHash.substring(0, 7) : '无';
+          const shortNewHash = newHash.substring(0, 7);
+          const commitTimeString = commitTime.toLocaleString('zh-CN', { 
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+          
+          if (isNew) {
+            message += `🆕 <b>${branch}</b> (新增分支)\n`;
+          } else {
+            message += `🔁 <b>${branch}</b>\n`;
+            message += `   ${shortOldHash} → ${shortNewHash}\n`;
+          }
+          message += `   🕐 ${commitTimeString}\n`;
+          message += `   🔗 <a href="${url}">查看分支</a>\n\n`;
+        });
+      } else {
+        message += "检测到变化但无法确定具体更新的分支。\n\n";
       }
-      
-      // 为每个分支提取文件
-      console.log("开始提取各分支文件...");
-      for (const branch of branches) {
-        copyBranchFiles(branch);
-      }
-      
-      // 创建分支索引文件
-      createBranchesIndex(branches);
-      
-      // 更新 commit 记录
-      writeLastCommits(latest);
-      
-      await sendTelegramMessage(`✅ edgetunnel 仓库有更新，已同步 ${branches.length} 个分支。\n\n分支列表:\n${branches.map(b => `• ${b}`).join('\n')}`);
-      console.log(`📝 已同步 ${branches.length} 个分支`);
-      
+           
+      await sendTelegramMessage(message);
+      console.log("📝 已更新 last_commit.txt 文件");
+      console.log(`⏰ 仓库最后更新时间: ${updateTimeString}`);
     } else {
       console.log("🔹 无更新，无需同步。");
+      // 无更新时不发送 Telegram 消息
     }
   } catch (error) {
     console.error("❌ 执行失败:", error);
