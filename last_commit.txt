@@ -1,3 +1,3 @@
 8292713f2ad7242c3ed6c893e7a772b7d8eaee48	refs/heads/1.0
-5964ee305dbec95dbe8b58bc6280dfd7d6a28f99	refs/heads/beta2.0
-ed0ee5ad548ac73ac5d77f6d5a6a085cd011ead0	refs/heads/main
+bc390f7c5fe670572811d769a8764ca2d9dbbe27	refs/heads/beta2.0
+ec259e2a340a7710e61c5189429e0f6c5b31149e	refs/heads/main
