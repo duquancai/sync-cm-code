@@ -2,6 +2,5 @@
 e3009385cc3b9c3be973be6a8eeeb251879b1033	refs/heads/2.0
 8ef718b1c91576fcf3aa5254c406123846408188	refs/heads/2.1
 e86fb83fe00a2d048937d1d628e9a47b646521c0	refs/heads/2.1.20260511041705
-d65ce65ea7284d7e0f71fe0f238b2385a0e31d47	refs/heads/beta2.1
-bc631f7851b5d93bfa3e9061c1e0a4d0ff9eec70	refs/heads/beta2.1-GrainTCP
+fe5a9b93c0e1f4beadf2c2dcba136724faa58e78	refs/heads/beta2.1
 fe5a9b93c0e1f4beadf2c2dcba136724faa58e78	refs/heads/main
